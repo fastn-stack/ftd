@@ -11,6 +11,7 @@ mod constants;
 mod device;
 mod event;
 mod loop_component;
+mod markup;
 mod mutable_variable;
 mod or_type;
 mod property;
@@ -61,7 +62,6 @@ pub fn fastn_test_js() -> &'static str {
 }
 
 pub fn all_js_without_test_and_ftd_langugage_js() -> String {
-    let markdown_js = fastn_js::markdown_js();
     let fastn_js = include_str_with_debug!("../js/fastn.js");
     let dom_js = include_str_with_debug!("../js/dom.js");
     let utils_js = include_str_with_debug!("../js/utils.js");
@@ -69,7 +69,7 @@ pub fn all_js_without_test_and_ftd_langugage_js() -> String {
     let ftd_js = include_str_with_debug!("../js/ftd.js");
     let web_component_js = include_str_with_debug!("../js/web-component.js");
     let post_init_js = include_str_with_debug!("../js/postInit.js");
-    format!("{markdown_js}{fastn_js}{dom_js}{utils_js}{virtual_js}{web_component_js}{ftd_js}{post_init_js}")
+    format!("{fastn_js}{dom_js}{utils_js}{virtual_js}{web_component_js}{ftd_js}{post_init_js}")
 }
 
 #[macro_export]

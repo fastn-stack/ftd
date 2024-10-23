@@ -755,11 +755,9 @@ pub async fn replace_markers_2023(
             r#"
                 <script src="{}"></script>
                 <script src="{}"></script>
-                <script src="{}"></script>
                 <link rel="stylesheet" href="{}">
                 {}
             "#,
-            hashed_markdown_js(),
             hashed_prism_js(),
             hashed_default_ftd_js(config.package.name.as_str()),
             hashed_prism_css(),

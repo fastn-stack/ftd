@@ -1575,9 +1575,11 @@ dependencies = [
 name = "fastn-js"
 version = "0.1.0"
 dependencies = [
+ "comrak",
  "fastn-grammar",
  "indoc",
  "itertools 0.13.0",
+ "once_cell",
  "prettify-js",
  "pretty",
  "quick-js",

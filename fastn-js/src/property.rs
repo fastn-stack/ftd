@@ -6,6 +6,12 @@ pub struct SetProperty {
     pub inherited: String,
 }
 
+impl SetProperty {
+    pub fn is_code(&self) -> bool {
+        matches!(self.kind, PropertyKind::Code)
+    }
+}
+
 #[derive(Debug)]
 pub enum SetPropertyValue {
     Reference(String),
@@ -16,13 +22,13 @@ pub enum SetPropertyValue {
 
 impl fastn_js::SetPropertyValue {
     pub fn to_js(&self) -> String {
-        self.to_js_with_element_name(&None)
+        self.to_js_with_element_name(&None, false)
     }
 
-    pub fn to_js_with_element_name(&self, element_name: &Option<String>) -> String {
+    pub fn to_js_with_element_name(&self, element_name: &Option<String>, is_code: bool) -> String {
         match self {
             fastn_js::SetPropertyValue::Reference(name) => fastn_js::utils::reference_to_js(name),
-            fastn_js::SetPropertyValue::Value(v) => v.to_js(element_name),
+            fastn_js::SetPropertyValue::Value(v) => v.to_js(element_name, is_code),
             fastn_js::SetPropertyValue::Formula(f) => f.to_js(element_name),
             fastn_js::SetPropertyValue::Clone(name) => fastn_js::utils::clone_to_js(name),
         }
@@ -157,13 +163,13 @@ pub(crate) fn conditional_values_to_js(
                 condition = condition,
                 expression = conditional_value
                     .expression
-                    .to_js_with_element_name(element_name),
+                    .to_js_with_element_name(element_name, false),
             ));
         } else {
             default = Some(
                 conditional_value
                     .expression
-                    .to_js_with_element_name(element_name),
+                    .to_js_with_element_name(element_name, false),
             )
         }
     }
@@ -213,10 +219,15 @@ pub enum Value {
 }
 
 impl Value {
-    pub(crate) fn to_js(&self, element_name: &Option<String>) -> String {
+    pub(crate) fn to_js(&self, element_name: &Option<String>, is_code: bool) -> String {
         use itertools::Itertools;
         match self {
-            Value::String(s) => format!("\"{}\"", s.replace('\n', "\\n").replace('\"', "\\\"")),
+            Value::String(s) => {
+                // string may have markdown that we want to parse
+                let res = if is_code { s } else { &fastn_js::markup::markup_inline(&s) };
+                let res = format!("\"{}\"", res.replace('\n', "\\n").replace('\"', "\\\""));
+                res
+            },
             Value::Integer(i) => i.to_string(),
             Value::Decimal(f) => f.to_string(),
             Value::Boolean(b) => b.to_string(),
@@ -225,7 +236,7 @@ impl Value {
                     format!(
                         "{}({})",
                         variant,
-                        value.to_js_with_element_name(element_name)
+                        value.to_js_with_element_name(element_name, is_code)
                     )
                 } else {
                     variant.to_owned()
@@ -235,7 +246,7 @@ impl Value {
                 "fastn.mutableList([{}])",
                 value
                     .iter()
-                    .map(|v| v.to_js_with_element_name(element_name))
+                    .map(|v| v.to_js_with_element_name(element_name, is_code))
                     .join(", ")
             ),
             Value::Record {
@@ -262,7 +273,7 @@ impl Value {
                         "{}.set(\"{}\", {});",
                         fastn_js::LOCAL_RECORD_MAP,
                         fastn_js::utils::name_to_js_(k),
-                        v.to_js_with_element_name(element_name)
+                        v.to_js_with_element_name(element_name, is_code)
                     ))
                     .join("\n")
             ),

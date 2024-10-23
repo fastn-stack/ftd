@@ -73,7 +73,7 @@ impl fastn_js::SetProperty {
                     "{},",
                     &self
                         .value
-                        .to_js_with_element_name(&Some(self.element_name.clone()))
+                        .to_js_with_element_name(&Some(self.element_name.clone()), self.is_code())
                 )
                 .as_str(),
             ))
@@ -155,7 +155,7 @@ impl fastn_js::Function {
                     format!(
                         "{}: {},",
                         fastn_js::utils::name_to_js_(k),
-                        v.to_js_with_element_name(element_name)
+                        v.to_js_with_element_name(element_name, false)
                     )
                 }),
                 pretty::RcDoc::softline(),

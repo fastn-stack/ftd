@@ -16,6 +16,8 @@ indoc.workspace = true
 fastn-grammar.workspace = true
 prettify-js.workspace = true
 thiserror.workspace = true
+comrak.workspace = true
+once_cell.workspace = true
 
 [target.'cfg(not(windows))'.dependencies]
 quick-js.workspace = true

@@ -48,7 +48,7 @@ pub(crate) use snapshot::Snapshot;
 pub(crate) use tracker::Track;
 pub(crate) use translation::{TranslatedDocument, TranslationData};
 
-pub const FASTN_UI_INTERFACE: &str = "fastn-stack.github.io/fastn-ui";
+pub const FASTN_UI_INTERFACE: &str = "fastn-ui.fifthtry.site";
 pub const PACKAGE_THEME_INTERFACE: &str = "ftd-lang.github.io/theme";
 pub const NUMBER_OF_CRS_TO_RESERVE: usize = 5;
 

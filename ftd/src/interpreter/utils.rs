@@ -334,6 +334,10 @@ pub fn get_argument_for_reference_and_remaining(
     )>,
 > {
     if let Some((component_name, arguments)) = component_definition_name_with_arguments {
+        // To handle cases: (When package/site name starts with the component name)
+        // name: app-switcher.fifthtry-site#app-switcher.is-open
+        let name = name.trim_start_matches(format!("{}#", doc.name).as_str());
+
         if let Some(referenced_argument) = name
             .strip_prefix(format!("{}.", component_name).as_str())
             .or_else(|| name.strip_prefix(format!("{}#{}.", doc.name, component_name).as_str()))

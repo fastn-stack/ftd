@@ -1,0 +1,14 @@
+{
+  "doc_name": "01-comment",
+  "items": [
+    {
+      "from": 1,
+      "to": 53,
+      "value": {
+        "type": "comment",
+        "value": " This is comment\nThis is other line in comment"
+      }
+    }
+  ],
+  "line_starts": [1]
+}

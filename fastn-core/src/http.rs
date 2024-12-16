@@ -2,6 +2,57 @@ pub const SESSION_COOKIE_NAME: &str = "fastn-sid";
 pub const X_FASTN_REQUEST_PATH: &str = "x-fastn-request-path";
 pub const X_FASTN_ROOT: &str = "x-fastn-root";
 
+pub enum Response {
+    /// FTDResult is the result of processing an FTD file using [fastn_core::serve_file]
+    FTDResult {
+        res: fastn_core::package::package_doc::FTDResult,
+        /// any cookies set via the `http` processor
+        cookies: Option<Vec<String>>
+    },
+    Raw {
+        content: Vec<u8>,
+        mime: Option<mime_guess::Mime>,
+        cookies: Option<Vec<String>>,
+        headers: Option<Vec<(String, String)>>,
+    },
+    PermanentRedirect {
+        location: String,
+    },
+    Wasm {
+        request: ft_sys_shared::Request,
+    },
+    Reqwest {
+        response: http::Response<bytes::Bytes>,
+    },
+    /// DefaultRoute is the result of [fastn_core::handle_default_route]
+    /// Http Cache-Control header should be applied to this.
+    DefaultRoute {
+        content: String,
+        mime: mime_guess::Mime,
+    },
+    NotFound {
+        message: String,
+    }
+}
+
+impl Response {
+    pub fn attach_cookies(&mut self, cookies: Vec<String>) {
+        let c = cookies;
+        match self {
+            Response::FTDResult { ref mut cookies, .. } => {
+                *cookies = Some(c);
+            }
+            Response::Raw { ref mut cookies, .. } => {
+                *cookies = Some(c);
+            }
+            _ => {
+                panic!("cookies can only be attached to FTDResult");
+            }
+        }
+    }
+}
+
+
 #[macro_export]
 macro_rules! server_error {
     ($($t:tt)*) => {{
@@ -23,7 +74,7 @@ macro_rules! unauthorised {
     }};
 }
 
-pub fn api_ok(data: impl serde::Serialize) -> serde_json::Result<fastn_core::http::Response> {
+pub fn api_ok(data: impl serde::Serialize) -> serde_json::Result<actix_web::HttpResponse> {
     #[derive(serde::Serialize)]
     struct SuccessResponse<T: serde::Serialize> {
         data: T,
@@ -41,39 +92,38 @@ pub fn api_ok(data: impl serde::Serialize) -> serde_json::Result<fastn_core::htt
     ))
 }
 
-pub fn unauthorised_(msg: String) -> fastn_core::http::Response {
+pub fn unauthorised_(msg: String) -> actix_web::HttpResponse {
     fastn_core::warning!("unauthorised: {}", msg);
     actix_web::HttpResponse::Unauthorized().body(msg)
 }
 
-pub fn server_error_(msg: String) -> fastn_core::http::Response {
+pub fn server_error_(msg: String) -> actix_web::HttpResponse {
     fastn_core::warning!("server error: {}", msg);
     server_error_without_warning(msg)
 }
 
-pub fn server_error_without_warning(msg: String) -> fastn_core::http::Response {
+pub fn server_error_without_warning(msg: String) -> actix_web::HttpResponse {
     actix_web::HttpResponse::InternalServerError().body(msg)
 }
 
-pub fn not_found_without_warning(msg: String) -> fastn_core::http::Response {
+pub fn not_found_without_warning(msg: String) -> actix_web::HttpResponse {
     actix_web::HttpResponse::NotFound().body(msg)
 }
 
-pub fn not_found_(msg: String) -> fastn_core::http::Response {
+pub fn not_found_(msg: String) -> actix_web::HttpResponse {
     fastn_core::warning!("page not found: {}", msg);
     not_found_without_warning(msg)
 }
 
 impl actix_web::ResponseError for fastn_core::Error {}
 
-pub type Response = actix_web::HttpResponse;
 pub type StatusCode = actix_web::http::StatusCode;
 
-pub fn permanent_redirect(url: String) -> fastn_core::http::Response {
+pub fn permanent_redirect(url: String) -> actix_web::HttpResponse {
     redirect_with_code(url, 308)
 }
 
-pub fn redirect_with_code(url: String, code: u16) -> fastn_core::http::Response {
+pub fn redirect_with_code(url: String, code: u16) -> actix_web::HttpResponse {
     match code {
         301 => actix_web::HttpResponse::MovedPermanently(),
         302 => actix_web::HttpResponse::Found(),
@@ -92,7 +142,7 @@ pub fn redirect_with_code(url: String, code: u16) -> fastn_core::http::Response 
 pub fn ok_with_content_type(
     data: Vec<u8>,
     content_type: mime_guess::Mime,
-) -> fastn_core::http::Response {
+) -> actix_web::HttpResponse {
     actix_web::HttpResponse::Ok()
         .content_type(content_type)
         .body(data)
@@ -550,7 +600,7 @@ pub(crate) fn get_available_port(
 pub fn user_err(
     errors: Vec<(String, Vec<String>)>,
     status_code: fastn_core::http::StatusCode,
-) -> fastn_core::Result<fastn_core::http::Response> {
+) -> fastn_core::Result<actix_web::HttpResponse> {
     let mut json_error = serde_json::Map::new();
 
     for (k, v) in errors {

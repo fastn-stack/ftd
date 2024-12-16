@@ -503,7 +503,7 @@ async fn get_post_response_for_id(
     log_message!(test_parameters.verbose, "Request details");
     log_variable!(test_parameters.verbose, &request);
 
-    let response = fastn_core::commands::serve::serve(config, request, true, &None)
+    let response = fastn_core::commands::serve::actix_serve(config, request, true, &None)
         .await?
         .0;
     update_cookies(saved_cookies, &response);
@@ -719,7 +719,7 @@ async fn get_js_for_id(
     log_message!(test_parameters.verbose, "Request details");
     log_variable!(test_parameters.verbose, &request);
 
-    let response = fastn_core::commands::serve::serve(config, request, true, &None)
+    let response = fastn_core::commands::serve::actix_serve(config, request, true, &None)
         .await?
         .0;
     update_cookies(saved_cookies, &response);
@@ -904,7 +904,7 @@ pub fn assert_optional_headers(
 }
 
 pub fn assert_response(
-    response: &fastn_core::http::Response,
+    response: &actix_web::HttpResponse,
     params: &ftd::Map<String>,
 ) -> fastn_core::Result<(u16, String)> {
     if let Some(redirection_url) = params.get(HTTP_REDIRECT_HEADER) {
@@ -915,7 +915,7 @@ pub fn assert_response(
 }
 
 pub fn assert_redirect(
-    response: &fastn_core::http::Response,
+    response: &actix_web::HttpResponse,
     redirection_location: &str,
 ) -> fastn_core::Result<(u16, String)> {
     let response_status_code = response.status().as_u16();
@@ -938,7 +938,7 @@ pub fn assert_redirect(
 }
 
 pub fn assert_location_and_status(
-    response: &fastn_core::http::Response,
+    response: &actix_web::HttpResponse,
     params: &ftd::Map<String>,
 ) -> fastn_core::Result<(u16, String)> {
     // By default, we are expecting status 200 if not http-status is not passed
@@ -972,7 +972,7 @@ pub fn assert_location_and_status(
 }
 
 pub fn get_response_location(
-    response: &fastn_core::http::Response,
+    response: &actix_web::HttpResponse,
 ) -> fastn_core::Result<Option<String>> {
     if let Some(redirect_location) = response.headers().get("Location") {
         return if let Ok(location) = redirect_location.to_str() {

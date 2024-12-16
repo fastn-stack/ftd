@@ -1,14 +1,15 @@
+use fastn_core::http::Response;
+
 #[tracing::instrument(skip_all)]
-fn handle_redirect(
-    config: &fastn_core::Config,
-    path: &camino::Utf8Path,
-) -> Option<fastn_core::http::Response> {
+fn handle_redirect(config: &fastn_core::Config, path: &camino::Utf8Path) -> Option<Response> {
     config
         .package
         .redirects
         .as_ref()
         .and_then(|v| fastn_core::package::redirects::find_redirect(v, path.as_str()))
-        .map(|r| fastn_core::http::permanent_redirect(r.to_string()))
+        .map(|r| Response::PermanentRedirect {
+            location: r.to_string(),
+        })
 }
 
 /// path: /-/<package-name>/<file-name>/
@@ -19,48 +20,25 @@ async fn serve_file(
     path: &camino::Utf8Path,
     only_js: bool,
     preview_session_id: &Option<String>,
-) -> fastn_core::http::Response {
-    if let Err(e) = config
+) -> fastn_core::Result<Response> {
+    config
         .config
         .package
-        .auto_import_language(config.request.cookie("fastn-lang"), None)
-    {
-        return if config.config.test_command_running {
-            fastn_core::http::not_found_without_warning(format!(
-                "fastn-Error: path: {}, {:?}",
-                path, e
-            ))
-        } else {
-            fastn_core::not_found!("fastn-Error: path: {}, {:?}", path, e)
-        };
-    }
+        .auto_import_language(config.request.cookie("fastn-lang"), None)?;
 
-    let f = match config
+    let f = config
         .get_file_and_package_by_id(path.as_str(), preview_session_id)
-        .await
-    {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::error!(
-                msg = "fastn-error path not found",
-                path = path.as_str(),
-                error = %e
-            );
-            return if config.config.test_command_running {
-                fastn_core::http::not_found_without_warning(format!(
-                    "fastn-Error: path: {}, {:?}",
-                    path, e
-                ))
-            } else {
-                fastn_core::not_found!("fastn-Error: path: {}, {:?}", path, e)
-            };
-        }
-    };
+        .await?;
 
     if let fastn_core::File::Code(doc) = f {
         let path = doc.get_full_path().to_string();
-        let mime = mime_guess::from_path(path).first_or_text_plain();
-        return fastn_core::http::ok_with_content_type(doc.content.into_bytes(), mime);
+        let mime = Some(mime_guess::from_path(path).first_or_text_plain());
+        return Ok(Response::Raw {
+            content: doc.content.into_bytes(),
+            mime,
+            headers: None,
+            cookies: None,
+        });
     }
 
     let main_document = match f {
@@ -68,11 +46,11 @@ async fn serve_file(
         _ => {
             tracing::error!(msg = "unknown handler", path = path.as_str());
             tracing::info!("file: {f:?}");
-            return fastn_core::server_error!("unknown handler");
+            return Err(fastn_core::Error::UnknownHandler);
         }
     };
 
-    match fastn_core::package::package_doc::read_ftd_(
+    fastn_core::package::package_doc::read_ftd_(
         config,
         &main_document,
         "/",
@@ -82,39 +60,14 @@ async fn serve_file(
         preview_session_id,
     )
     .await
-    {
-        Ok(val) => match val {
-            fastn_core::package::package_doc::FTDResult::Html(body) => {
-                fastn_core::http::ok_with_content_type(body, mime_guess::mime::TEXT_HTML_UTF_8)
-            }
-            fastn_core::package::package_doc::FTDResult::Redirect { url, code } => {
-                if Some(mime_guess::mime::APPLICATION_JSON) == config.request.content_type() {
-                    fastn_core::http::ok_with_content_type(
-                        // intentionally using `.unwrap()` as this should never fail
-                        serde_json::to_vec(&serde_json::json!({ "redirect": url })).unwrap(),
-                        mime_guess::mime::APPLICATION_JSON,
-                    )
-                } else {
-                    fastn_core::http::redirect_with_code(url, code)
-                }
-            }
-        },
-        Err(e) => {
-            tracing::error!(
-                msg = "fastn-Error",
-                path = path.as_str(),
-                error = e.to_string()
-            );
-            fastn_core::server_error!("fastn-Error: path: {}, {:?}", path, e)
-        }
-    }
+    .map(|res| Response::FTDResult { res, cookies: None })
 }
 
 fn guess_mime_type(path: &str) -> mime_guess::Mime {
     mime_guess::from_path(path).first_or_octet_stream()
 }
 
-pub fn clear_sid(req: &fastn_core::http::Request) -> fastn_core::http::Response {
+pub fn clear_sid(req: &fastn_core::http::Request) -> actix_web::HttpResponse {
     let mut cookie = actix_web::cookie::Cookie::build(ft_sys_shared::SESSION_KEY, "")
         .domain(match req.connection_info.host().split_once(':') {
             Some((domain, _port)) => domain.to_string(),
@@ -135,7 +88,7 @@ pub fn clear_sid(req: &fastn_core::http::Request) -> fastn_core::http::Response 
     )
 }
 
-pub fn clear_sid2(req: &fastn_core::http::Request) -> fastn_core::http::Response {
+pub fn clear_sid2(req: &fastn_core::http::Request) -> Response {
     // safari is ignoring cookie if we return a redirect, so we are returning a meta-refresh
     // further we are not using .secure(true) here because then cookie is not working on
     // localhost
@@ -150,10 +103,91 @@ pub fn clear_sid2(req: &fastn_core::http::Request) -> fastn_core::http::Response
         .same_site(actix_web::cookie::SameSite::Strict)
         .finish();
 
-    actix_web::HttpResponse::build(actix_web::http::StatusCode::OK)
-        .cookie(cookie)
-        .append_header(("Content-Type", "text/html"))
-        .body(r#"<meta http-equiv="refresh" content="0; url=/" />"#)
+    Response::Raw {
+        content: r#"<meta http-equiv="refresh" content="0; url=/" />"#.into(),
+        headers: Some(vec![("Content-Type".to_string(), "text/html".to_string())]),
+        cookies: Some(vec![cookie.to_string()]),
+        mime: None,
+    }
+}
+
+/// Wraps [serve] to send [actix_web::HttpResponse]
+pub async fn actix_serve(
+    config: &fastn_core::Config,
+    req: fastn_core::http::Request,
+    only_js: bool,
+    preview_session_id: &Option<String>,
+) -> fastn_core::Result<(actix_web::HttpResponse, bool)> {
+    let (res, cacheable) = serve(config, req, only_js, preview_session_id).await?;
+
+    let resp = match res {
+        Response::FTDResult { res, cookies } => {
+            match res {
+                fastn_core::package::package_doc::FTDResult::Html(body) => {
+                    fastn_core::http::ok_with_content_type(body, mime_guess::mime::TEXT_HTML_UTF_8)
+                }
+                fastn_core::package::package_doc::FTDResult::Redirect { url, code } => {
+                    if Some(mime_guess::mime::APPLICATION_JSON) == req.content_type() {
+                        fastn_core::http::ok_with_content_type(
+                            // intentionally using `.unwrap()` as this should never fail
+                            serde_json::to_vec(&serde_json::json!({ "redirect": url })).unwrap(),
+                            mime_guess::mime::APPLICATION_JSON,
+                        )
+                    } else {
+                        fastn_core::http::redirect_with_code(url, code)
+                    }
+                }
+            }
+        }
+        Response::Raw {
+            content,
+            mime,
+            cookies,
+            headers,
+        } => {
+            let mut resp = &mut actix_web::HttpResponse::Ok();
+
+            if let Some(mime) = mime {
+                resp = resp.content_type(mime);
+            }
+
+            let resp = resp.body(content);
+
+            if let Some(cookies) = cookies {
+                for cookie in cookies {
+                    resp.headers_mut().append(
+                        actix_web::http::header::SET_COOKIE,
+                        actix_web::http::header::HeaderValue::from_str(cookie.as_str()).unwrap(),
+                    );
+                }
+            }
+
+            if let Some(headers) = headers {
+                for (k, v) in headers {
+                    resp.headers_mut().insert(
+                        k.parse().unwrap(),
+                        actix_web::http::header::HeaderValue::from_str(v.as_str()).unwrap(),
+                    );
+                }
+            }
+
+            resp
+        }
+        Response::PermanentRedirect { location } => {
+            fastn_core::http::permanent_redirect(location)
+        }
+        Response::Wasm { request } => fastn_ds::wasm::to_response(request),
+        Response::Reqwest { response } => {
+            fastn_core::http::ResponseBuilder::from_reqwest(response).await
+        }
+        Response::DefaultRoute { content, mime } => actix_web::HttpResponse::Ok()
+            .content_type(mime)
+            .append_header(("Cache-Control", "public, max-age=31536000"))
+            .body(content),
+        Response::NotFound { message } => fastn_core::http::not_found_without_warning(message),
+    };
+
+    Ok((resp, cacheable))
 }
 
 #[tracing::instrument(skip_all)]
@@ -162,7 +196,7 @@ pub async fn serve(
     req: fastn_core::http::Request,
     only_js: bool,
     preview_session_id: &Option<String>,
-) -> fastn_core::Result<(fastn_core::http::Response, bool)> {
+) -> fastn_core::Result<(Response, bool)> {
     let mut req_config = fastn_core::RequestConfig::new(config, &req, "", "/");
 
     if req.path() == "/-/auth/logout/" {
@@ -178,7 +212,7 @@ pub async fn serve(
     }
 
     if let Some(default_response) = handle_default_route(&req, config.package.name.as_str()) {
-        return default_response.map(|r| (r, true));
+        return Ok((default_response, true));
     }
 
     let path: camino::Utf8PathBuf = req.path().replacen('/', "", 1).parse()?;
@@ -209,7 +243,7 @@ pub async fn serve_helper(
     only_js: bool,
     path: camino::Utf8PathBuf,
     preview_session_id: &Option<String>,
-) -> fastn_core::Result<fastn_core::http::Response> {
+) -> fastn_core::Result<Response> {
     let mut resp = if req_config.request.path() == "/" {
         serve_file(req_config, &path.join("/"), only_js, preview_session_id).await
     } else {
@@ -250,136 +284,74 @@ pub async fn serve_helper(
                     )
                 };
 
-                let mut resp =
-                    actix_web::HttpResponse::new(actix_web::http::StatusCode::PERMANENT_REDIRECT);
-                resp.headers_mut().insert(
-                    actix_web::http::header::LOCATION,
-                    actix_web::http::header::HeaderValue::from_str(path.as_str()).unwrap(), // TODO:
-                );
-                return Ok(resp);
+                return Ok(Response::PermanentRedirect { location: path });
             }
         }
 
-        let file_response =
-            serve_file(req_config, path.as_path(), only_js, preview_session_id).await;
-
-        tracing::info!(
-            "before executing proxy: file-status: {}, path: {}",
-            file_response.status(),
-            &path
-        );
-
-        file_response
+        serve_file(req_config, path.as_path(), only_js, preview_session_id).await
     };
 
-    if let Some(r) = req_config.processor_set_response.take() {
-        return shared_to_http(r);
+    if let Some(request) = req_config.processor_set_response.take() {
+        return Ok(Response::Wasm { request });
     }
 
-    for cookie in &req_config.processor_set_cookies {
-        resp.headers_mut().append(
-            actix_web::http::header::SET_COOKIE,
-            actix_web::http::header::HeaderValue::from_str(cookie.as_str()).unwrap(),
-        );
+    if !req_config.processor_set_cookies.is_empty() {
+        resp.as_mut()
+            .map(|ref mut x| x.attach_cookies(req_config.processor_set_cookies.clone()));
     }
 
-    Ok(resp)
-}
-
-fn shared_to_http(r: ft_sys_shared::Request) -> fastn_core::Result<fastn_core::http::Response> {
-    let status_code = match r.method.parse() {
-        Ok(v) => v,
-        Err(e) => {
-            return Err(fastn_core::Error::GenericError(format!(
-                "wasm code is not an integer {}: {e:?}",
-                r.method.as_str()
-            )));
-        }
-    };
-    let mut builder = actix_web::HttpResponse::build(status_code);
-    let mut resp = builder.status(r.method.parse().unwrap()).body(r.body);
-
-    for (k, v) in r.headers {
-        resp.headers_mut().insert(
-            k.parse().unwrap(),
-            actix_web::http::header::HeaderValue::from_bytes(v.as_slice()).unwrap(),
-        );
-    }
-
-    Ok(resp)
+    resp
 }
 
 pub fn handle_default_route(
     req: &fastn_core::http::Request,
     package_name: &str,
-) -> Option<fastn_core::Result<fastn_core::http::Response>> {
+) -> Option<Response> {
     if req
         .path()
         .ends_with(fastn_core::utils::hashed_default_css_name())
     {
-        return Some(Ok(actix_web::HttpResponse::Ok()
-            .content_type(mime_guess::mime::TEXT_CSS)
-            .append_header(("Cache-Control", "public, max-age=31536000"))
-            .body(ftd::css())));
+        Some(Response::DefaultRoute {
+            content: ftd::css().to_string(),
+            mime: mime_guess::mime::TEXT_CSS,
+        })
     } else if req
         .path()
         .ends_with(fastn_core::utils::hashed_default_js_name())
     {
-        return Some(Ok(actix_web::HttpResponse::Ok()
-            .content_type(mime_guess::mime::TEXT_JAVASCRIPT)
-            .append_header(("Cache-Control", "public, max-age=31536000"))
-            .body(format!(
-                "{}\n\n{}",
-                ftd::build_js(),
-                fastn_core::fastn_2022_js()
-            ))));
+        Some(Response::DefaultRoute {
+            content: format!("{}\n\n{}", ftd::build_js(), fastn_core::fastn_2022_js()),
+            mime: mime_guess::mime::TEXT_JAVASCRIPT,
+        })
     } else if req
         .path()
         .ends_with(fastn_core::utils::hashed_default_ftd_js(package_name))
     {
-        return Some(Ok(actix_web::HttpResponse::Ok()
-            .content_type(mime_guess::mime::TEXT_JAVASCRIPT)
-            .append_header(("Cache-Control", "public, max-age=31536000"))
-            .body(ftd::js::all_js_without_test(package_name))));
+        Some(Response::DefaultRoute {
+            content: ftd::js::all_js_without_test(package_name),
+            mime: mime_guess::mime::TEXT_JAVASCRIPT,
+        })
     } else if req
         .path()
         .ends_with(fastn_core::utils::hashed_markdown_js())
     {
-        return Some(Ok(actix_web::HttpResponse::Ok()
-            .content_type(mime_guess::mime::TEXT_JAVASCRIPT)
-            .append_header(("Cache-Control", "public, max-age=31536000"))
-            .body(ftd::markdown_js())));
-    } else if let Some(theme) =
-        fastn_core::utils::hashed_code_theme_css()
-            .iter()
-            .find_map(|(theme, url)| {
-                if req.path().ends_with(url) {
-                    Some(theme)
-                } else {
-                    None
-                }
-            })
-    {
-        let theme_css = ftd::theme_css();
-        return theme_css.get(theme).cloned().map(|theme| {
-            Ok(actix_web::HttpResponse::Ok()
-                .content_type(mime_guess::mime::TEXT_CSS)
-                .append_header(("Cache-Control", "public, max-age=31536000"))
-                .body(theme))
-        });
+        Some(Response::DefaultRoute {
+            content: ftd::markdown_js().to_string(),
+            mime: mime_guess::mime::TEXT_JAVASCRIPT,
+        })
     } else if req.path().ends_with(fastn_core::utils::hashed_prism_js()) {
-        return Some(Ok(actix_web::HttpResponse::Ok()
-            .content_type(mime_guess::mime::TEXT_JAVASCRIPT)
-            .append_header(("Cache-Control", "public, max-age=31536000"))
-            .body(ftd::prism_js())));
+        Some(Response::DefaultRoute {
+            content: ftd::prism_js().to_string(),
+            mime: mime_guess::mime::TEXT_JAVASCRIPT,
+        })
     } else if req.path().ends_with(fastn_core::utils::hashed_prism_css()) {
-        return Some(Ok(actix_web::HttpResponse::Ok()
-            .content_type(mime_guess::mime::TEXT_CSS)
-            .append_header(("Cache-Control", "public, max-age=31536000"))
-            .body(ftd::prism_css())));
+        Some(Response::DefaultRoute {
+            content: ftd::prism_css().to_string(),
+            mime: mime_guess::mime::TEXT_CSS,
+        })
+    } else {
+        None
     }
-
-    None
 }
 
 async fn handle_static_route(
@@ -387,7 +359,7 @@ async fn handle_static_route(
     package_name: &str,
     ds: &fastn_ds::DocumentStore,
     session_id: &Option<String>,
-) -> fastn_core::Result<fastn_core::http::Response> {
+) -> fastn_core::Result<Response> {
     return match handle_static_route_(path, package_name, ds, session_id).await {
         Ok(r) => Ok(r),
         Err(fastn_ds::ReadError::NotFound(_)) => {
@@ -401,7 +373,7 @@ async fn handle_static_route(
         package_name: &str,
         ds: &fastn_ds::DocumentStore,
         session_id: &Option<String>,
-    ) -> Result<fastn_core::http::Response, fastn_ds::ReadError> {
+    ) -> Result<Response, fastn_ds::ReadError> {
         if path == "/favicon.ico" {
             return favicon(ds, session_id).await;
         }
@@ -430,21 +402,23 @@ async fn handle_static_route(
         package_name: &str,
         ds: &fastn_ds::DocumentStore,
         session_id: &Option<String>,
-    ) -> fastn_core::Result<fastn_core::http::Response> {
+    ) -> fastn_core::Result<Response> {
         // todo: handle dark images using manifest
         if let Some(new_file_path) = generate_dark_image_path(path) {
             return handle_static_route_(new_file_path.as_str(), package_name, ds, session_id)
                 .await
                 .or_else(|e| {
                     if let fastn_ds::ReadError::NotFound(e) = e {
-                        Ok(fastn_core::http::not_found_without_warning(e))
+                        Ok(Response::NotFound { message: e })
                     } else {
                         Err(e.into())
                     }
                 });
         }
 
-        Ok(fastn_core::http::not_found_without_warning("".to_string()))
+        Ok(Response::NotFound {
+            message: "".to_string(),
+        })
     }
 
     fn generate_dark_image_path(path: &str) -> Option<String> {
@@ -468,7 +442,7 @@ async fn handle_static_route(
     async fn favicon(
         ds: &fastn_ds::DocumentStore,
         session_id: &Option<String>,
-    ) -> Result<fastn_core::http::Response, fastn_ds::ReadError> {
+    ) -> Result<Response, fastn_ds::ReadError> {
         match static_file(ds, "favicon.ico", session_id).await {
             Ok(r) => Ok(r),
             Err(fastn_ds::ReadError::NotFound(_)) => {
@@ -483,14 +457,14 @@ async fn handle_static_route(
         ds: &fastn_ds::DocumentStore,
         path: &str,
         session_id: &Option<String>,
-    ) -> Result<fastn_core::http::Response, fastn_ds::ReadError> {
+    ) -> Result<Response, fastn_ds::ReadError> {
         ds.read_content(&fastn_ds::Path::new(path), session_id)
             .await
-            .map(|r| {
-                fastn_core::http::ok_with_content_type(
-                    r,
-                    guess_mime_type(path.to_string().as_str()),
-                )
+            .map(|r| Response::Raw {
+                content: r,
+                mime: Some(guess_mime_type(path.to_string().as_str())),
+                cookies: None,
+                headers: None,
             })
     }
 }
@@ -499,7 +473,7 @@ async fn handle_endpoints(
     config: &fastn_core::Config,
     req: &fastn_core::http::Request,
     session_id: &Option<String>,
-) -> Option<fastn_core::Result<fastn_core::http::Response>> {
+) -> Option<fastn_core::Result<Response>> {
     let matched_endpoint = config
         .package
         .endpoints
@@ -526,7 +500,7 @@ async fn handle_endpoints(
             .handle_wasm(url, req, endpoint.mountpoint.to_string(), session_id)
             .await
         {
-            Ok(r) => Some(Ok(fastn_ds::wasm::to_response(r))),
+            Ok(r) => Some(Ok(Response::Wasm { request: r })),
             Err(e) => return Some(Err(e.into())),
         };
     }
@@ -541,18 +515,17 @@ async fn handle_endpoints(
         .await
         .map_err(fastn_core::Error::DSHttpError)
     {
-        Ok(response) => response,
+        Ok(response) => Response::Reqwest { response },
         Err(e) => return Some(Err(e)),
     };
 
-    let actix_response = fastn_core::http::ResponseBuilder::from_reqwest(response).await;
-    Some(Ok(actix_response))
+    Some(Ok(response))
 }
 
 async fn handle_apps(
     config: &fastn_core::Config,
     req: &fastn_core::http::Request,
-) -> Option<fastn_core::Result<fastn_core::http::Response>> {
+) -> Option<fastn_core::Result<Response>> {
     let matched_app = config.package.apps.iter().find(|a| {
         req.path().starts_with(
             a.end_point
@@ -581,11 +554,11 @@ async fn actual_route(
     req: actix_web::HttpRequest,
     body: actix_web::web::Bytes,
     preview_session_id: &Option<String>,
-) -> fastn_core::Result<fastn_core::http::Response> {
+) -> fastn_core::Result<actix_web::HttpResponse> {
     tracing::info!(method = req.method().as_str(), uri = req.path());
     let req = fastn_core::http::Request::from_actix(req, body);
 
-    serve(config, req, false, preview_session_id)
+    actix_serve(config, req, false, preview_session_id)
         .await
         .map(|(r, _)| r)
 }
@@ -595,7 +568,7 @@ async fn route(
     req: actix_web::HttpRequest,
     body: actix_web::web::Bytes,
     config: actix_web::web::Data<std::sync::Arc<fastn_core::Config>>,
-) -> fastn_core::Result<fastn_core::http::Response> {
+) -> fastn_core::Result<actix_web::HttpResponse> {
     actual_route(&config, req, body, &None).await
 }
 

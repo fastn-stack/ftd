@@ -143,6 +143,9 @@ pub enum Error {
 
     #[error("MigrationError: {0}")]
     MigrationError(#[from] fastn_core::migrations::MigrationError),
+
+    #[error("UnknownHandler")]
+    UnknownHandler,
 }
 
 impl From<std::convert::Infallible> for Error {
@@ -160,27 +163,27 @@ impl Error {
         Err(Self::generic(error))
     }
 
-    pub fn to_html(&self) -> fastn_core::http::Response {
+    pub fn to_html(&self) -> actix_web::HttpResponse {
         // TODO: hate this error type, have no idea how to handle things properly at this stage now
         //       we should remove this type and write more precise error types
         match self {
             Error::FormError(errors) => {
                 tracing::info!("form error: {:?}", errors);
-                fastn_core::http::Response::Ok()
+                actix_web::HttpResponse::Ok()
                     .content_type("application/json")
                     .json(serde_json::json!({"errors": errors}))
             }
             Error::NotFound(message) => {
                 tracing::info!("not found: {:?}", message);
-                fastn_core::http::Response::NotFound().body(message.to_string())
+                actix_web::HttpResponse::NotFound().body(message.to_string())
             }
             Error::DSReadError(fastn_ds::ReadError::NotFound(f)) => {
                 tracing::info!("ds read error, not found: {f}");
-                fastn_core::http::Response::NotFound().body("page not found: {f}")
+                actix_web::HttpResponse::NotFound().body("page not found: {f}")
             }
             _ => {
                 tracing::error!("error: {:?}", self);
-                fastn_core::http::Response::InternalServerError()
+                actix_web::HttpResponse::InternalServerError()
                     .body(format!("internal server error: {self:?}"))
             }
         }
